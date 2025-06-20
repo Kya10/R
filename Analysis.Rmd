@@ -1,0 +1,292 @@
+---
+title: "Debt Investment Analysis"
+author: "student"
+date: "2025-04-13"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r }
+# Load necessary libraries
+library(tidyverse)
+library(lubridate)
+library(kableExtra)
+library(ggplot2)
+library(scales)
+library(dplyr)
+
+```
+
+
+```{r}
+# Load data
+accounts_data <- read_csv(choose.files())
+payments <- read_csv(choose.files())
+
+```
+
+
+```{r }
+# Merge datasets
+combined_data <- accounts_data %>%
+  left_join(payments, by = "uuid")
+head(combined_data)
+
+# Data cleaning and preparation
+combined_data1 <- combined_data %>%
+  mutate(
+    activation_date = as.Date(activation_date, format = "%m/%d/%Y"),
+    date_of_data = as.Date(date_of_data, format = "%m/%d/%Y"),
+    repmt_date = as.Date(repmt_date, format = "%m/%d/%Y"),
+    financed_amount = total_cost - downpmt_cost,
+    upfront_days = downpmt_cost / receivable_per_day,
+    contract_weeks = contract_days / 7,
+    age_months = as.numeric(date_of_data - activation_date) / 30,
+    days_since_last_payment = as.numeric(date_of_data - repmt_date),
+    amount_paid = ifelse(is.na(repmt_amt), 0, repmt_amt),
+    is_defaulted = ifelse(days_since_last_payment >= 90 | age_months > 36, TRUE, FALSE)
+
+  )
+colnames(combined_data1)
+
+```
+```{r}
+sapply(combined_data1, function(x) sum(is.na(x)))
+
+```
+
+
+```{r}
+# Identify defaulted accounts
+combined_data1 %>%
+  mutate(
+    repmt_date = as.Date(repmt_date, format = "%m/%d/%Y"),
+    days_since_last_payment = as.numeric(date_of_data - repmt_date),
+    amount_paid = ifelse(is.na(repmt_amt), 0, repmt_amt),
+    is_defaulted = ifelse(days_since_last_payment >= 90 | age_months > 36, TRUE, FALSE)
+  ) %>%
+  mutate(
+    is_defaulted = case_when(
+      days_since_last_payment >= 90 ~ TRUE,
+      age_months > 36 ~ TRUE,
+      TRUE ~ FALSE
+    )
+  )
+```
+
+
+```{r PART A, echo=FALSE}
+# metrics by product group
+product_analysis <- combined_data1 %>%
+  group_by(product_name) %>%
+  summarise(
+    avg_financed_amount = mean(financed_amount, na.rm = TRUE),
+    avg_deposit_amount = mean(downpmt_cost, na.rm = TRUE),
+    avg_upfront_days = mean(upfront_days, na.rm = TRUE),
+    avg_contract_length_weeks = mean(contract_weeks, na.rm = TRUE),
+    count = n(),
+    total_sales_value = sum(total_cost, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    prop_by_count = count / sum(count),
+    prop_by_value = total_sales_value / sum(total_sales_value)
+  ) %>%
+  select(
+    product_name,
+    avg_financed_amount,
+    avg_deposit_amount,
+    avg_upfront_days,
+    avg_contract_length_weeks,
+    prop_by_count,
+    prop_by_value,
+    total_sales_value
+  )
+
+# Table Format
+product_analysis %>%
+  mutate(
+    avg_financed_amount = dollar(avg_financed_amount, accuracy = 1),
+    avg_deposit_amount = dollar(avg_deposit_amount, accuracy = 1),
+    avg_upfront_days = round(avg_upfront_days, 1),
+    avg_contract_length_weeks = round(avg_contract_length_weeks, 1),
+    prop_by_count = percent(prop_by_count, accuracy = 0.1),
+    prop_by_value = percent(prop_by_value, accuracy = 0.1),
+    total_sales_value = dollar(total_sales_value, accuracy = 1)
+  ) %>%
+  kable(
+    col.names = c(
+      "Product", "Avg Financed Amount", "Avg Deposit Amount", 
+      "Avg Upfront Days", "Avg Contract Length (weeks)", 
+      "% of Total Sales (count)", "% of Total Sales (value)",
+      "Total Sales Value"
+    ),
+    caption = "Product Group Analysis"
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+
+```{r PART B}
+# Ensure date columns are in Date format
+combined_data1 <- combined_data1 %>%
+  mutate(
+    activation_date = as.Date(activation_date),
+    date_of_data = as.Date(date_of_data),
+    repmt_date = as.Date(repmt_date, format = "%m/%d/%Y")
+  )
+
+#  days since activation and days since last payment
+portfolio_data <- combined_data1 %>%
+  mutate(
+    days_since_activation = as.numeric(date_of_data - activation_date),
+    age_months = days_since_activation / 30
+  ) %>%
+  group_by(uuid) %>%
+  mutate(
+    last_payment_date = max(repmt_date, na.rm = TRUE),
+    total_paid = sum(repmt_amt, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    days_since_last_payment = as.numeric(date_of_data - last_payment_date),
+    outstanding_balance = pmax(total_cost - total_paid, 0),
+    is_default = ifelse(
+      days_since_last_payment >= 90 | age_months > 36,
+      TRUE,
+      FALSE
+    )
+  )
+
+# portfolio metrics
+portfolio_metrics <- list(
+  total_portfolio_outstanding = sum(portfolio_data$outstanding_balance, na.rm = TRUE),
+  defaulted_balance = sum(portfolio_data$outstanding_balance[portfolio_data$is_default], na.rm = TRUE),
+  active_balance = sum(portfolio_data$outstanding_balance[!portfolio_data$is_default], na.rm = TRUE)
+) %>%
+  as_tibble() %>%
+  mutate(
+    default_ratio = defaulted_balance / total_portfolio_outstanding
+  )
+
+#  formatted table
+portfolio_metrics %>%
+  mutate(
+    total_portfolio_outstanding = dollar(total_portfolio_outstanding, accuracy = 1),
+    defaulted_balance = dollar(defaulted_balance, accuracy = 1),
+    active_balance = dollar(active_balance, accuracy = 1),
+    default_ratio = percent(default_ratio, accuracy = 0.1)
+  ) %>%
+  kable(
+    col.names = c(
+      "Total Portfolio Outstanding", 
+      "Defaulted Balance", 
+      "Active Balance",
+      "Default Ratio"
+    ),
+    caption = "Key Portfolio Metrics"
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+
+```{r PART C_analysis}
+# Create activation cohorts
+cohort_analysis <- portfolio_data %>%
+  mutate(
+    activation_quarter = quarter(activation_date, with_year = TRUE),
+    activation_cohort = paste0(
+      year(activation_date), 
+      " Q", 
+      quarter(activation_date)
+    )
+  ) %>%
+  group_by(activation_cohort, country) %>%
+  summarise(
+    avg_outstanding_balance = mean(outstanding_balance, na.rm = TRUE),
+    default_rate = mean(is_default, na.rm = TRUE),
+    avg_pct_paid = mean(total_paid / total_cost, na.rm = TRUE),
+    n_accounts = n(),
+    .groups = 'drop'
+  )
+
+# Visualize repayment by cohort
+ggplot(cohort_analysis, aes(x = activation_cohort, y = avg_pct_paid, fill = country)) +
+  geom_col(position = "dodge") +
+  labs(
+    title = "Average Percentage Paid by Activation Cohort",
+    x = "Activation Cohort",
+    y = "Average Percentage of Contract Paid",
+    fill = "Country"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Visualize default rates by cohort
+ggplot(cohort_analysis, aes(x = activation_cohort, y = default_rate, fill = country)) +
+  geom_col(position = "dodge") +
+  scale_y_continuous(labels = percent) +
+  labs(
+    title = "Default Rate by Activation Cohort",
+    x = "Activation Cohort",
+    y = "Default Rate",
+    fill = "Country"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+```{r PART C}
+# Create activation cohorts by quarter
+cohort_analysis <- combined_data1 %>%
+  mutate(
+    activation_quarter = quarter(activation_date, with_year = TRUE),
+    activation_month = floor_date(activation_date, "month")
+  )
+
+# Calculate repayment rates by cohort
+repayment_rates <- cohort_analysis %>%
+  group_by(activation_quarter, product_name) %>%
+  summarise(
+    total_contracts = n(),
+    default_rate = mean(is_defaulted, na.rm = TRUE),
+    avg_pct_paid = mean(amount_paid / financed_amount, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Visualization: Default rates by cohort and product
+ggplot(repayment_rates, aes(x = activation_quarter, y = default_rate, color = product_name)) +
+  geom_line() +
+  geom_point() +
+  scale_y_continuous(labels = percent) +
+  labs(
+    title = "Default Rates by Activation Cohort and Product",
+    x = "Activation Quarter",
+    y = "Default Rate",
+    color = "Product"
+  ) +
+  theme_minimal()
+```
+
+
+## Key Findings and Recommendations:
+
+The analysis reveals several critical insights about the distributed energy company's portfolio. First, product differentiation significantly impacts financial performance, with SunPump representing 68.4% of total sales value despite comprising only 29.1% of contracts by count. This high-value product has substantially different terms (average financed amount of 155,513 with 60 upfront days) compared to other offerings.The portfolio shows a 25.9 % and 3.07 billion in defaulted receivables, indicating notable credit risk. Cohort analysis demonstrates improving repayment trends in recent quarters, suggesting underwriting or operational enhancements, though certain products like SunExtra + Radio show elevated default rates in specific markets.
+
+For the investment team, we recommend: 
+
+(1) implementing product-specific risk pricing, particularly for SunPump given its outsized portfolio contribution and unique risk profile; 
+
+(2) establishing geographic concentration limits for markets showing persistently high default rates; and
+
+(3) structuring the investment with performance triggers tied to cohort-level repayment metrics to mitigate risks from potential vintage quality fluctuations. 
+
+The improving repayment trends in recent cohorts are encouraging, but continued monitoring of product mix evolution and geographic expansion will be essential for risk management. A tiered investment approach that segments exposure by product risk category could optimize risk-adjusted returns.
